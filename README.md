@@ -46,12 +46,12 @@ See more details in nedotest.h file...
 
 
 1. include header file:
-
+```
     #include "nedotest.h"
-
+```
 
 2. write the test
-
+```
     TEST(SuiteName, TestName)
     {
         ...
@@ -64,10 +64,10 @@ See more details in nedotest.h file...
         REUIRE_FALSE(error);
         ...
     }
-
+```
 
 3. You can add Fixture for all tests in particular suite:
-
+```
     struct FIXTURE(SuiteName)
     {
         char *data;
@@ -88,10 +88,10 @@ See more details in nedotest.h file...
     }
 
     /* TODO curently it isn't specified how test can access fixture... */
-
+```
 
 4. You can mock functions:
-
+```
     /* mock for the function which not exists, not implemented */
     MOCK_FUNCTION(char*, func1, float)
 
@@ -115,7 +115,7 @@ See more details in nedotest.h file...
             MOCK_RESET(func1);
 
     }
-
+```
 
 ## Links:
 
