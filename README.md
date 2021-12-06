@@ -123,10 +123,11 @@ Project was inspired by:
 
   1. https://github.com/jasmcaus/tau
   2. https://github.com/ztbrown/Simulacrum
-  3. https://github.com/catchorg/Catch2/
-  4. https://www.criterion.com/
-  5. https://cmocka.org/
-  6. https://github.com/Snaipe/Mimick
-  7. https://libcheck.github.io/check/
-  8. https://github.com/meekrosoft/fff
+  3. https://github.com/eerimoq/nala
+  4. https://github.com/catchorg/Catch2/
+  5. https://www.criterion.com/
+  6. https://cmocka.org/
+  7. https://github.com/Snaipe/Mimick
+  8. https://libcheck.github.io/check/
+  9. https://github.com/meekrosoft/fff
 
