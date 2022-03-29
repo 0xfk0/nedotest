@@ -2,7 +2,7 @@
 
 # Nedotest
 
-**Nedotest** is a minimalistic (1KLOC) Unit Testing framework for C and C++.
+**Nedotest** is a minimalistic (~1000 SLOC) Unit Testing framework for C and C++.
 
 
 ## Features
@@ -10,10 +10,10 @@
   * lightweight;
   * works with modern C (C11) and C++ (C++11);
   * Catch2 like assertion syntax;
-  * No any bloat in header file -- no any unnecessary dependencies at all!
+  * No any bloat in header file -- no any unnecessary dependencies at all;
   * Supports test fixtures;
   * automatic test registration, no need to write main() function;
-  * in case of error test system prints variable values (as Catch2 does this! in plain C!)
+  * in case of error test system prints variable values (as Catch2 does this, in plain C!)
   * unlike many other unit test systems all values in assertions evaluated only once, so following code remains valid:
 
         CHECK(x EQ 0);
@@ -28,11 +28,11 @@
   2. parallel execution on multiprocessor platforms;
   3. output to XML (xUnit);
   4. timeouts for tests;
-  5. ability to run and debug one particular test, filtering tests to be executed;
-  6. debug breakpoints in place of failure;
+  5. <del>ability to run and debug one particular test, filtering tests to be executed</del> DONE;
+  6. debug breakpoints in place of failure (you can set breakpoint on `_nt_trap` function);
   7. strict C11 standard compliance, no unnecessary dependencies on Unix/Windows, particular compiler version, compiler extensions, etc...
   8. must be able to run on any platform, including embedded environments.
-  9. support for threading (get rid of global variables).
+  9. <del>support for threading (get rid of global variables)</del>;
   10. use C++ exceptions instead of longjmp.
 
 
