@@ -214,13 +214,26 @@
 #define MOCK_SET_FUNC(func, func_ptr)   _NT_MOCK_SET_FUNC(func, func_ptr)
 
 
+/* This macros causes test failure with the given message. */
+#define FAIL(message)   _NT_FAIL(message)
+
 #endif
 
 
 /* Public header finished at this point, you must not use the definitins
  * found below directly! */
 
+#ifdef __GNUC__
+#define _NT_UNUSED(var) var __attribute__((unused))
+#else
+#define _NT_UNUSED(var) var
+#endif
 
+#ifdef __cplusplus
+#define _NT_NULL 0
+#else
+#define _NT_NULL ((void*)0)
+#endif
 
 /* Note, following macroses will declare _nt_OP_char functions
  * which actually never be used (as char is expanded to int due
@@ -418,20 +431,30 @@ _NT_TYPES(_NT_DECL_PRINT, dummy)
             name, __FILE__, __LINE__, _NT_OP_NAME(op), neg, narg,       \
             _NT_STRINGIFY(left), (left), _NT_SEL_PRINT((left)),         \
             _NT_STRINGIFY(right), (right), _NT_SEL_PRINT((right)) )     \
-                ? (void)0 : continuation)
+                ? (void)0 : (_nt_trap(), continuation))
 
 /* Functions called in case if assertion failed and must be ignored
  * or must cause test termination. */
-#define _NT_IGNORE ((void)0)
-#define _NT_FAIL _nt_fail
+#define _NT_IGNORE  ((void)0)
+#define _NT_TRAP    _NT_FAIL(_NT_NULL)
 
-void _nt_fail(void);
-struct _nt_dummy { char tag[sizeof(&_nt_fail)]; };
+void _nt_trap(void);
 
+// TODO CAPTURE(vars...) as in Catch2
+// TODO EXPECT_EXIT(expr, retval-predicate, stderr-msg)
+// TODO separate logger, WARN? XML...
+// TODO catch aborts?
+
+#define _NT_FAIL(message) _nt_fail(message, __FILE__, __LINE__)
+void _nt_fail(const char *msg, const char *file, unsigned line);
+
+struct _nt_unused {
+    char dummy[sizeof(&_nt_trap) + sizeof(&_nt_fail)];
+};
 
 /* Split arguments and call generic assertion function. */
 #define _NT_CHECK(...)          _NT_APPLY(_NT_CHECK_TRUE_,    __VA_ARGS__ _NE_ 0,, 1,)
-#define _NT_REQUIRE(...)        _NT_APPLY(_NT_REQUIRE_,       __VA_ARGS__ _NE_ 0,, 1,)
+#define _NT_REQUIRE(...)        _NT_APPLY(_NT_REQUIRE_TRUE_,  __VA_ARGS__ _NE_ 0,, 1,)
 #define _NT_CHECK_FALSE(...)    _NT_APPLY(_NT_CHECK_FALSE_,   __VA_ARGS__ _NE_ 0,, 1,)
 #define _NT_REQUIRE_FALSE(...)  _NT_APPLY(_NT_REQUIRE_FALSE_, __VA_ARGS__ _NE_ 0,, 1,)
 
@@ -439,15 +462,35 @@ struct _nt_dummy { char tag[sizeof(&_nt_fail)]; };
     _NT_ASSERT("CHECK", left, op, right, 0, narg, _NT_IGNORE)
 
 #define _NT_REQUIRE_TRUE_(left, op, right, op2, narg, ...) \
-    _NT_ASSERT("REQUIRE", left, op, right, 0, narg, _NT_FAIL)
+    _NT_ASSERT("REQUIRE", left, op, right, 0, narg, _NT_TRAP)
 
 
 #define _NT_CHECK_FALSE_(left, op, right, op2, narg, ...) \
     _NT_ASSERT("CHECK_FALSE", left, op, right, 1, narg, _NT_IGNORE)
 
 #define _NT_REQUIRE_FALSE_(left, op, right, op2, narg, ...) \
-    _NT_ASSERT("CHECK_FALSE", left, op, right, 1, narg, _NT_FAIL)
+    _NT_ASSERT("CHECK_FALSE", left, op, right, 1, narg, _NT_TRAP)
 
+
+/* Combine test name from suite name and particular test name. */
+#define _NT_TEST_NAME(suite, name) _NT_CONCAT(_NT_CONCAT(suite, _), name)
+
+/* Generate signature and name of function which registers test within system. */
+#define _NT_REGISTER_SIG(prefix, name) \
+    static __attribute__((constructor)) void _NT_CONCAT(prefix, name)(void)
+
+/* Create name of the function implementing particular test. */
+#define _NT_TEST_FUNC(suite, name) _NT_CONCAT(_nt_test_, _NT_TEST_NAME(suite, name))
+#define _NT_RUNNER_FUNC(suite, name)  _NT_CONCAT(_nt_runner_, _NT_TEST_NAME(suite, name))
+
+/* Generate signature of the function which performs the test. */
+#define _NT_SETUP_FUNC(suite)       _NT_CONCAT(_nt_setup_, suite)
+#define _NT_TEARDOWN_FUNC(suite)    _NT_CONCAT(_nt_teardown_, suite)
+#define _NT_SETUP_HELPER(suite)     _NT_CONCAT(_nt_setup_helper_, suite)
+#define _NT_TEARDOWN_HELPER(suite)  _NT_CONCAT(_nt_teardown_helper_, suite)
+
+/* Generate function which registers the test. */
+#define _NT_FIXTURE(suite)          _NT_CONCAT(_nt_fixture_, suite)
 
 typedef struct { int tag; } _nt_fixture_tag;
 
@@ -463,7 +506,7 @@ struct _nt_test {
     const char *const file;
     unsigned line;
     const char *const name;
-    void (*const func)(void);
+    void (*const func)(_nt_fixture_tag *);
     const struct _nt_suite *suite;
     int fail;
     struct _nt_test *next;
@@ -473,51 +516,30 @@ void _nt_register_test(struct _nt_test *);
 
 const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
 
-
-/* Combine test name from suite name and particular test name. */
-#define _NT_TEST_NAME(suite, name) \
-    _NT_CONCAT(_test_, _NT_CONCAT(_NT_CONCAT(_NT_CONCAT(suite, _), _), name))
-
-/* Generate signature and name of function which registers test within system. */
-#define _NT_REGISTER_SIG(prefix, name) \
-    static __attribute__((constructor)) void _NT_CONCAT(prefix, name)(void)
-
-/* Create name of the function implementing particular test. */
-#define _NT_TEST_FN_NAME(suite, name) _NT_CONCAT(_nt_test_, _NT_TEST_NAME(suite, name))
-
-/* Generate signature of the function which performs the test. */
-#define _NT_SETUP_FUNC(suite)       _NT_CONCAT(_nt_setup_, suite)
-#define _NT_TEARDOWN_FUNC(suite)    _NT_CONCAT(_nt_teardown_, suite)
-#define _NT_SETUP_HELPER(suite)     _NT_CONCAT(_nt_setup_helper_, suite)
-#define _NT_TEARDOWN_HELPER(suite)  _NT_CONCAT(_nt_teardown_helper_, suite)
-
-/* Generate function which registers the test. */
-#define _NT_FIXTURE(suite)          _NT_CONCAT(_nt_fixture_, suite)
-
-#ifdef __cplusplus
-#define _NT_NULL 0
-#else
-#define _NT_NULL ((void*)0)
-#endif
-
-/* Define test function. */
-#define _NT_TEST(Suite, Name)                                           \
-    static void _NT_TEST_FN_NAME(Suite, Name)();                        \
-    _NT_REGISTER_SIG(_nt_register_test_, _NT_TEST_NAME(Suite, Name)) {  \
-        static struct _nt_suite smem = {                                \
-            _NT_STRINGIFY(Suite), 0, _NT_NULL, _NT_NULL, _NT_NULL       \
-        };                                                              \
-        const struct _nt_suite *s_ptr = _nt_setup_suite(&smem);         \
-        static struct _nt_test test = {                                 \
-            __FILE__, __LINE__,                                         \
-            _NT_STRINGIFY(Suite) "/" _NT_STRINGIFY(Name),               \
-            _NT_TEST_FN_NAME(Suite, Name),                              \
-            0, 0, _NT_NULL                                              \
-        };                                                              \
-        test.suite = s_ptr;                                             \
-        _nt_register_test(&test);                                       \
-    }                                                                   \
-    static void _NT_TEST_FN_NAME(Suite, Name)(void)
+/* Define test function. 
+ * TODO: pass fixture to each test. */
+#define _NT_TEST(Suite, Name)                                               \
+    struct _NT_FIXTURE(Suite);                                              \
+    static void _NT_TEST_FUNC(Suite, Name)(struct _NT_FIXTURE(Suite) *);    \
+    static void _NT_RUNNER_FUNC(Suite, Name)(_nt_fixture_tag *fixture) {    \
+        _NT_TEST_FUNC(Suite, Name)((struct _NT_FIXTURE(Suite)*)fixture);    \
+    }                                                                       \
+    _NT_REGISTER_SIG(_nt_register_test_, _NT_TEST_NAME(Suite, Name)) {      \
+        static struct _nt_suite smem = {                                    \
+            _NT_STRINGIFY(Suite), 0, _NT_NULL, _NT_NULL, _NT_NULL           \
+        };                                                                  \
+        const struct _nt_suite *s_ptr = _nt_setup_suite(&smem);             \
+        static struct _nt_test test = {                                     \
+            __FILE__, __LINE__,                                             \
+            _NT_STRINGIFY(Suite) "/" _NT_STRINGIFY(Name),                   \
+            _NT_RUNNER_FUNC(Suite, Name),                                   \
+            0, 0, _NT_NULL                                                  \
+        };                                                                  \
+        test.suite = s_ptr;                                                 \
+        _nt_register_test(&test);                                           \
+    }                                                                       \
+    static void _NT_TEST_FUNC(Suite, Name)                                  \
+                (struct _NT_FIXTURE(Suite) *_NT_UNUSED(thiz))
 
 
 #define _NT_FIXTURE_TEMPLATE(suite, prefix, helper, func, setup, teardown)  \
@@ -529,7 +551,7 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
         static struct _nt_suite var = {                                     \
             _NT_STRINGIFY(suite),                                           \
             sizeof(struct _NT_FIXTURE(suite)),                              \
-            setup, teardown, {}                                             \
+            setup, teardown, _NT_NULL                                       \
         };                                                                  \
         _nt_setup_suite(&var);                                              \
     }                                                                       \
@@ -538,11 +560,11 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
 
 #define _NT_TEST_SETUP(suite) \
     _NT_FIXTURE_TEMPLATE(suite, _nt_register_setup_, _NT_SETUP_HELPER(suite),    \
-        _NT_SETUP_FUNC(suite), _NT_SETUP_HELPER(suite), {})
+        _NT_SETUP_FUNC(suite), _NT_SETUP_HELPER(suite), _NT_NULL)
 
 #define _NT_TEST_TEARDOWN(suite) \
     _NT_FIXTURE_TEMPLATE(suite, _nt_register_teardown_,_NT_TEARDOWN_HELPER(suite), \
-        _NT_TEARDOWN_FUNC(suite), {}, _NT_TEARDOWN_HELPER(suite))
+        _NT_TEARDOWN_FUNC(suite), _NT_NULL, _NT_TEARDOWN_HELPER(suite))
 
 
 /* This macros count number of arguments in range [1..20]. */
@@ -595,20 +617,55 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
 #define _NT_MOCK_ARGS(...) _NT_MOCK_DECL_ARGS(_NT_MOCK_ARG_NAME, __VA_ARGS__)
 
 
-#define _NT_MOCK_TYPE(func) struct _NT_CONCAT(_nt_mock_type_, func)
-#define _NT_MOCK(func) (_NT_CONCAT(_nt_mock_, func)())
+#define _NT_NVOID(type, expr) \
+    _NT_APPLY(_NT_EMPTY(_NT_VOID, _NT_EXPAND, _NT_CONCAT(_NT_EAT_, type)), expr)
 
-/* Arguments must be function argument types. */
+#define _NT_EAT_void
+#define _NT_EXPAND(...) __VA_ARGS__
+#define _NT_VOID(...)
+
+#define _NT_EMPTY(True, False, arg) \
+    _NT_APPLY(_NT_CDR, _NT_APPLY(_NT_CDR, _NT_EMPTY_EVAL arg (True), )) \
+    _NT_APPLY(_NT_CAR, _NT_APPLY(_NT_CDR, _NT_COMMA_FUNC arg (), False))
+
+#define _NT_EMPTY_EVAL(expr) , expr
+#define _NT_COMMA_FUNC() ,
+
+#if 0
+1. _NT_EMPTY(1,-1,)
+2. _NT_EMPTY(2,-2,*)
+3. _NT_EMPTY(-3,3,)
+4. _NT_EMPTY(-4,4,*)
+#endif
+
+#if 0
+_NT_NVOID(void, void x;)
+_NT_NVOID(int, int x;)
+_NT_NVOID(void *, void * y;)
+#endif
+
+#define _NT_MOCK_TYPE(func) struct _NT_CONCAT(_nt_mock_type_, func)
+#define _NT_MOCK(func) (_NT_CONCAT(_nt_mock_get_, func)())
+
+struct _nt_mock {
+    void (*const func)(void);
+    struct _nt_mock *next;
+};
+
+void _nt_register_mock(struct _nt_mock *);
+
+/* Arguments must be function argument types.
+ * TODO reset all mocks at end of each tests. */
 #define _NT_MOCK_ANY_FUNCTION(Real, Wrap, Result, Func, ...)        \
     _NT_MOCK_TYPE(Func) {                                           \
             unsigned long count;                                    \
             Result (*func)(__VA_ARGS__);                            \
             union {                                                 \
                 int dummy;                                          \
-                Result result;                                      \
+                _NT_NVOID(Result, Result result);                   \
             };                                                      \
     };                                                              \
-    _NT_MOCK_TYPE(Func) *_NT_CONCAT(_nt_mock_, Func)(void) {        \
+    _NT_MOCK_TYPE(Func) *_NT_CONCAT(_nt_mock_get_, Func)(void) {    \
         static _NT_MOCK_TYPE(Func) mock = {0, _NT_NULL, {0}};       \
         return &mock;                                               \
     }                                                               \
@@ -616,10 +673,13 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
         static const _NT_MOCK_TYPE(Func) init = {0, _NT_NULL, {0}}; \
         *_NT_MOCK(Func) = init;                                     \
     }                                                               \
+    unsigned long _NT_CONCAT(_nt_mock_count_, Func)(void) {         \
+        return _NT_MOCK(Func)->count;                               \
+    }                                                               \
     Result Real(__VA_ARGS__);                                       \
     Result _NT_CONCAT(_nt_fake_, Func)(_NT_MOCK_DECL(__VA_ARGS__)){ \
-        return 0 ? _NT_MOCK(Func)->func(_NT_MOCK_ARGS(__VA_ARGS__)) \
-                    :_NT_MOCK(Func)->result;                        \
+        if (0) _NT_MOCK(Func)->func(_NT_MOCK_ARGS(__VA_ARGS__));    \
+        return _NT_NVOID(Result, _NT_MOCK(Func)->result);           \
     }                                                               \
     Result Wrap(_NT_MOCK_DECL(__VA_ARGS__))                         \
     {                                                               \
@@ -627,6 +687,13 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
         mock->count++;                                              \
         return (mock->func ? mock->func : Real)                     \
                     (_NT_MOCK_ARGS(__VA_ARGS__));                   \
+    }                                                               \
+    _NT_REGISTER_SIG(_nt_register_mock_, Func) {                    \
+        static struct _nt_mock mock = {                             \
+            _NT_CONCAT(_nt_mock_reset_, Func),                      \
+            _NT_NULL                                                \
+        };                                                          \
+        _nt_register_mock(&mock);                                   \
     }
 
 #define _NT_MOCK_FUNCTION(result, func, ...) \
@@ -638,7 +705,8 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
 
 #define _NT_MOCK_RESET(func) (_NT_CONCAT(_nt_mock_reset_, func)())
 
-#define _NT_MOCK_COUNT(func) (_NT_MOCK(func)->count)
+// TODO expand to readable expression...
+#define _NT_MOCK_COUNT(func) _NT_CONCAT(_nt_mock_count_, func)()
 
 #define _NT_MOCK_SET_RESULT(Func, val) \
     (_NT_MOCK(Func)->func = _NT_CONCAT(_nt_fake_, Func), _NT_MOCK(Func)->result = (val))

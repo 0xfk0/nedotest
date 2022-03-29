@@ -8,18 +8,29 @@
 #endif
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <string.h>
 #include <setjmp.h>
+
+#ifdef __unix__
+#include <signal.h>
+#endif
+
 #include "nedotest.h"
+
+#define Size(array) sizeof(array)/sizeof(array[0])
 
 enum { MAX_STRING_LEN = 70 };
 
+const char *argv0;
 static FILE *out;
+static int verbose;
 
 static struct _nt_suite *suites_list;
-static struct _nt_test *tests_list;
+static struct _nt_test* tests_list;
+static struct _nt_mock* mocks_list;
 
 #ifdef __cplusplus
 #define _Thread_local thread_local
@@ -28,7 +39,14 @@ static struct _nt_test *tests_list;
 #endif
 
 // FIXME MSVC, also max_align_t, alignas, void *_alloca(size_t size), constructor
-_Thread_local jmp_buf exception;
+
+struct context {
+    struct _nt_test *test;
+    jmp_buf exception;
+};
+
+_Thread_local struct context *tls_context;
+
 
 /* This macros allows to check, that format string corresponds to argument
  * data types given to _nt_printf function. */
@@ -178,7 +196,13 @@ static void assertion(
     const char *left_expr, _nt_value left_val, _nt_print_fn left_print, 
     const char *right_expr, _nt_value right_val, _nt_print_fn right_print)
 {
-    _NT_PRINTF("%s: %u: assertion failed: %s", file, line, name);
+    struct _nt_test *test = tls_context->test;
+    if (!test->fail) {
+        tls_context->test->fail = 1;
+        _NT_PRINTF("Test %s FAILED:\n", test->name);
+    }
+
+    _NT_PRINTF("%4s%s: %u: assertion failed: %s", "", file, line, name);
     if (!narg)
         _NT_PRINTF("(%s %s %s)\n", left_expr, op, right_expr);
     else
@@ -186,14 +210,15 @@ static void assertion(
 
     unsigned nl = 0;
     if (!is_literal(left_expr)) {
-        _NT_PRINTF("where (%s) = ", left_expr);
+        _NT_PRINTF("%8swhere (%s) = ", "", left_expr);
         left_print(left_val);
         ++nl;
     }
 
     if (!narg && !is_literal(right_expr)) {
-        _NT_PRINTF("%s%s (%s) = ",
+        _NT_PRINTF("%s%8s%s (%s) = ",
             nl ? ",\n" : "",
+            "",
             nl ? "  and" : "where",
             right_expr);
         right_print(right_val);
@@ -201,6 +226,8 @@ static void assertion(
     }       
 
     if (nl) _NT_PRINTF(".\n\n");
+
+    fflush(out);
 }
 
 /* Define implementation of named (LT, GT, etc...) binary operations */
@@ -296,16 +323,45 @@ void _nt_register_test(struct _nt_test *test)
     *next = test;
 }
 
-
-void _nt_fail(void)
+void _nt_register_mock(struct _nt_mock *mock)
 {
-    longjmp(exception, 1);
+    mock->next = mocks_list;
+    mocks_list = mock;
+}
+
+static void reset_all_mocks(void)
+{
+    struct _nt_mock *mock = mocks_list;
+    while (mock) {
+        mock->func();
+        mock = mock->next;
+    }
+}
+
+
+void _nt_trap(void)
+{
+    volatile int x = 0;
+    (void)x;
+}
+
+void _nt_fail(const char *msg, const char *file, unsigned line)
+{
+    if (msg) {
+        _NT_PRINTF("Test %s FAILED:\n", tls_context->test->name);
+        _NT_PRINTF("%s: %u: failure with a message: %s", file, line, msg);
+        fflush(out);
+    }
+    longjmp(tls_context->exception, 1);
 }
 
 
 static int run_test(struct _nt_test *test)
 {
-    int result;
+    _NT_PRINTF("running %s\n", test->name);
+    fflush(out);
+
+    reset_all_mocks();
 
     #ifndef __cplusplus
     _Alignas(max_align_t) char fixture [test->suite->fixture_size];
@@ -318,37 +374,63 @@ static int run_test(struct _nt_test *test)
     if (test->suite->setup)
         test->suite->setup((_nt_fixture_tag*)fixture);
 
-    if (!setjmp(exception))
+    struct context ctx;
+    ctx.test = test;
+
+    if (!setjmp(ctx.exception))
     {
-        test->func();
-        result = 0;
+        tls_context = &ctx;
+
+        test->fail = 0;
+        test->func((_nt_fixture_tag*) fixture);
     }
     else {
-        result = 1;
+        test->fail = 1;
     }
+
+    tls_context = NULL;
 
     if (test->suite->teardown)
         test->suite->teardown((_nt_fixture_tag*)fixture);
 
-    return result;
+    return test->fail;
 }
 
 
-static void run_all_tests(void)
+static int run_all_tests(int nfilt, const char *const* filters)
 {
+    unsigned ntests = 0, nfails = 0;
     struct _nt_test *test = tests_list;
     while (test)
     {
-        test->fail = run_test(test);
-        if (test->fail)
-            _NT_PRINTF("Test %s FAILED!\n", test->name);
+        char const *const* filt = filters;
+        while (filt != &filters[nfilt]) {
+            if (match(test->name, *filt))
+                break;
+
+            ++filt;
+        }
+
+        if (!nfilt || filt != &filters[nfilt])
+        {
+            ++ntests;
+            test->fail = run_test(test);
+            if (test->fail)
+                ++nfails;
+        }
+
         test = test->next;
     }
+
+    _NT_PRINTF("%u/%u tests passed, %u tests failed.\n", ntests-nfails, ntests, nfails);
+    return ntests != nfails;
 }
 
 
-int main()
+static int cmd_list(int argc, const char *const* argv)
 {
+    (void)argc, (void)argv;
+
     puts("Suites:");
     struct _nt_suite *suite = suites_list;
     while (suite) {
@@ -365,9 +447,112 @@ int main()
     }
     puts("");
 
-    out = stdout;
-    run_all_tests();
+    exit(EXIT_SUCCESS);
+    return 0;
+}
+
+static int cmd_verbose(int argc, const char *const* argv)
+{
+    (void)argc, (void)argv;
+    
+    verbose = 0;
 
     return 0;
+}
+
+
+
+static int cmd_help(int argc, const char *const* argv);
+
+struct cmdline_opt {
+    int (*handler)(int argc, const char *const* argv);
+    const char *const name[4];
+    const char *args;
+    char const* help;
+
+};
+
+static const struct cmdline_opt cmdline_opts[] = {
+    {cmd_help,      {"-h", "-help", "--help"},      "",     "print help"},
+    {cmd_list,      {"-l", "-list", "--list"},      "",     "list available tests"},
+    {cmd_verbose,   {"-v", "-verbose", "--verbose"}, "",    "print name of each executed test"}
+};
+
+    
+static int cmd_help(int argc, const char *const* argv)
+{
+    (void)argc, (void)argv;
+
+    printf("%s [-options] [tests-filter...]\n", argv0);
+    puts("Available options are:");
+    const struct cmdline_opt *opts = cmdline_opts;
+    while (opts != &cmdline_opts[Size(cmdline_opts)]) {
+        printf("%-10s %-16s %s\n", opts->name[0], opts->args, opts->help);
+        ++opts;
+    }
+
+    exit(EXIT_SUCCESS);
+    return 0;
+}
+
+
+static int argv_sort(const void *Left, const void *Right)
+{
+    const char *const* left = (const char*const*)Left, 
+               *const *right = (const char *const*)Right;
+    
+    int res = ((*left[0] - '-') & 0xff) - ((*right[0] - '-') & 0xff);
+    return res ? res : strcmp(*left, *right);
+}
+
+int main(int argc, const char *argv[])
+{
+    argv0 = argv[0];
+    out = stdout;
+
+    /* parse command line options */
+    qsort(&argv[1], argc-1, sizeof(char*), argv_sort);
+
+    const char *const* arg = &argv[1];
+    while (arg != &argv[argc])
+    {
+        if (**arg != '-')
+            break;
+
+        if (!strcmp(*arg, "--")) {
+            ++arg;
+            break;
+        }
+
+        int unknown = 1;
+        const struct cmdline_opt *opts = cmdline_opts;
+        while (opts != &cmdline_opts[Size(cmdline_opts)])
+        {
+            for (unsigned i = 0; i < Size(opts->name); ++i)
+            {
+                if (!opts->name[i])
+                    break;
+
+                if (!strcmp(*arg, opts->name[i]))
+                {
+                    arg += opts->handler(&argv[argc] - arg, &argv[arg - &argv[0] + 1]);
+                    unknown = 0;
+                    break;
+                }
+            }
+
+            ++opts;
+        }
+
+        if (unknown)
+        {
+            fprintf(stderr, "%s: '%s': unknown option\n", argv0, *arg);
+            exit(EXIT_FAILURE);
+        }
+
+        ++arg;
+    }
+
+    return run_all_tests(&argv[argc] - arg, arg);
 }
 
