@@ -19,6 +19,7 @@
         CHECK(x EQ 0);
         CHECK(++x EQ 1);
         CHECK(++x EQ 2)...
+        
 
 ## Future plans
 
@@ -42,7 +43,7 @@
 
 ## Writing tests
 
-See more details in nedotest.h file...
+Please see comments in `nedotest.h` for details, how to use a test system.
 
 
 1. include header file:
@@ -116,6 +117,24 @@ See more details in nedotest.h file...
 
     }
 ```
+
+## Command line options:
+
+`--help` or `-h`    shows all available options...
+
+`--list` or `-l`    list tests list which was compiled within executable.
+
+`--verbose` or `-v`  prints name of each test before executing it.
+
+All other arguments interpreted as test filters: if at least one test filter specified, the test system will run
+only the tests matching to specified filters. Test filters is somethat similar to shell's glob patterns: each character
+must be matched as is, but asterisk (`*`) might replace any number of any characters. Filters must match to the names
+of the tests. You can get list of test names with option `--list`.
+
+Test names are composed from test suite name and particular test name divided by slash. For example, expression
+in source code like `TEST(SuiteName, TestName)` will create test named `SuiteName/TestName`. So you can easily
+run only particular test, or only tests from particular suite (by filter like `SuiteName/*`).
+
 
 ## Links:
 
