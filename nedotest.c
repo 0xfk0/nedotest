@@ -7,12 +7,15 @@
 #include <stddef.h>
 #endif
 
+#include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <stdint.h>
 #include <ctype.h>
 #include <stdarg.h>
 #include <string.h>
 #include <setjmp.h>
+#include <limits.h>
 
 #ifdef __unix__
 #include <signal.h>
@@ -21,6 +24,10 @@
 #include "nedotest.h"
 
 #define Size(array) sizeof(array)/sizeof(array[0])
+
+#define container_of(ptr, type, member) \
+    ( (void)sizeof(0 ? (ptr) : &((type *)0)->member), \
+      (type *)((char*)(ptr) - offsetof(type, member)) )
 
 enum { MAX_STRING_LEN = 70 };
 
@@ -31,6 +38,8 @@ static int verbose;
 static struct _nt_suite *suites_list;
 static struct _nt_test* tests_list;
 static struct _nt_mock* mocks_list;
+
+static _Thread_local struct _nt_test *current_test;
 
 #ifdef __cplusplus
 #define _Thread_local thread_local
@@ -45,88 +54,142 @@ struct context {
     jmp_buf exception;
 };
 
-_Thread_local struct context *tls_context;
+struct string_buf {
+    const size_t capacity;
+    size_t len;
+    size_t max_len;
+    char str[];
+};
+
+struct _nt_print;
+typedef struct _nt_print* _nt_print_t;
+
+struct _nt_print {
+    struct string_buf buf;
+};
+
+static inline struct string_buf* string_buf_reset(struct string_buf *buf)
+{
+    buf->len = buf->max_len = 0;
+    if (buf->capacity > 0)
+        buf->str[0] = 0;
+    return buf;
+}
+
+static inline struct string_buf* string_buf_init(struct string_buf *buf, size_t capacity)
+{
+    *(size_t*)(intptr_t)&buf->capacity = capacity;
+    return string_buf_reset(buf);
+}
+
+#define MAKE_STRING_BUF(capacity)                               \
+    (string_buf_init(&(union {                                  \
+        struct string_buf buf;                                  \
+        char data [offsetof(struct string_buf, str[capacity])]; \
+    }){}.buf, capacity))
 
 
 /* This macros allows to check, that format string corresponds to argument
  * data types given to _nt_printf function. */
-#define _NT_PRINTF(...) (0 ? (void)printf(__VA_ARGS__) : _nt_printf(__VA_ARGS__))
-void _nt_printf(const char *fmt, ...);
+#define _NT_PRINTF(buf, ...) (0 ? (void)printf(__VA_ARGS__) : _printf_buf(buf, __VA_ARGS__))
 
-void _nt_printf(const char *fmt, ...)
+static int vprintf_buf(_nt_print_t out, const char *fmt, va_list args)
+{
+    struct string_buf *buf = &out->buf;
+    assert(buf->capacity >= buf->len);
+    int len = vsnprintf(&buf->str[buf->len], buf->capacity - buf->len, fmt, args);
+    if (len < 0)
+        return -1;
+
+    buf->max_len += len;
+    if (buf->capacity) {
+        buf->len += len;
+        if (buf->len > buf->capacity)
+            buf->len = buf->capacity - 1;
+    }
+    return len;
+}
+
+static int _printf_buf(_nt_print_t out, const char *fmt, ...)
 {
     va_list args;
     va_start(args, fmt);
-    vfprintf(out, fmt, args);
+    int len = vprintf_buf(out, fmt, args);
     va_end(args);
+    return len;
 }
-
 
 /* Define set of "printer" functions for all known types. */
 
-static void print_char(int val, const char *fmt)
+static void print_char(_nt_print_t out, int val, const char *fmt)
 {
     int graph = isgraph(val);
-    if (graph) _NT_PRINTF("'%c' (", val);
-    _NT_PRINTF(fmt, val);
-    if (graph) _NT_PRINTF(")");
+    if (graph) _NT_PRINTF(out, "'%c' (", val);
+    _NT_PRINTF(out, fmt, val);
+    if (graph) _NT_PRINTF(out, ")");
 }
 
 /* Note, due to integral promotion all chars actualy expanded to integers. */
 
-void _nt_print_char(_nt_value val)
+void _nt_print_Char(_nt_print_t out, const _nt_value_t* val)
 {
-    print_char((unsigned)*val.any_signed, "%#2x");
+    print_char(out, (unsigned)val->Char, "%#2x");
 }
 
-void _nt_print_unsigned_char(_nt_value val)
+void _nt_print_unsigned_char(_nt_print_t out, const _nt_value_t* val)
 {
-    print_char((unsigned)*val.any_unsigned, "%u");
+    print_char(out, val->unsigned_char, "%u");
 }
 
-void _nt_print_signed_char(_nt_value val)
+void _nt_print_signed_char(_nt_print_t out, const _nt_value_t* val)
 {
-    print_char((int)*val.any_signed, "%d");
+    print_char(out, val->signed_char, "%d");
 }
 
-void _nt_print_any_unsigned(_nt_value val)
+void _nt_print_any_unsigned(_nt_print_t out, const _nt_value_t* val)
 {
-    _NT_PRINTF("%llu", *val.any_unsigned);
+    _NT_PRINTF(out, "%llu", val->any_unsigned);
 }
 
-void _nt_print_any_signed(_nt_value val)
+void _nt_print_any_signed(_nt_print_t out, const _nt_value_t* val)
 {
-    _NT_PRINTF("%lld", *val.any_signed);
+    _NT_PRINTF(out, "%lld", val->any_signed);
 }
 
-void _nt_print_any_float(_nt_value val)
+void _nt_print_any_float(_nt_print_t out, const _nt_value_t* val)
 {
-    _NT_PRINTF("%Lf", *val.any_float);
+    _NT_PRINTF(out, "%Lf", val->any_float);
 }
 
-void _nt_print_any_pointer(_nt_value val)
+void _nt_print_any_pointer(_nt_print_t out, const _nt_value_t* val)
 {
-    _NT_PRINTF("%p", *val.any_pointer);
+    _NT_PRINTF(out, "%p", val->any_pointer);
 }
 
-void _nt_print_cstring(_nt_value val)
+void _nt_print_cstring(_nt_print_t out, const _nt_value_t* val)
 {
-    _NT_PRINTF("\"");
-
-    const char *const str = *val.cstring;
+    const char *const str = val->cstring;
     const char *p = str;
+    
+    if (!str) {
+        _NT_PRINTF(out, "(null)");
+        return;
+    }
+
+    _NT_PRINTF(out, "\"");
+
     while (*p && p - str < MAX_STRING_LEN)
     {
         if (isprint(*p) && *p != '\"') {
-            _NT_PRINTF("%c", *p);
+            _NT_PRINTF(out, "%c", *p);
         }
         else {
-            _NT_PRINTF("\\x%02x", (unsigned)*p);
+            _NT_PRINTF(out, "\\x%02x", (unsigned)*p & 0xff);
         }
         ++p;
     }
 
-    _NT_PRINTF("\"");
+    _NT_PRINTF(out, "\"%s", (p - str >= MAX_STRING_LEN) ? ".." : "");
 }
 
 
@@ -174,6 +237,14 @@ static int is_literal(const char *expr)
         int count;
         size_t const len = strlen(expr);
 
+        count = 0;
+        if (sscanf(expr, " ( ( void * ) 0 ) %n", &count) >= 0 && count > 0 && !expr[count])
+            return 1;
+
+        count = 0;
+        if (sscanf(expr, " ( void * ) 0 %n", &count) >= 0 && count > 0 && !expr[count])
+            return 1;
+
         if (sscanf(expr, "%lli%n", &sval, &count) == 1 && len == (size_t)count) 
             return 1;
 
@@ -183,52 +254,310 @@ static int is_literal(const char *expr)
         if (sscanf(expr, "%Lf%n", &fval, &count) == 1 && len == (size_t)count) 
             return 1;
 
-        if (expr[0] == '"')
+        if (expr[0] == '"' || expr[0] == '\'')
             return 1;
 
         return 0;
 }
 
 
-/* Function which is called when particular assertion is failed. */
-static void assertion(
-    const char *name, const char *file, unsigned line, const char *op, int narg,
-    const char *left_expr, _nt_value left_val, _nt_print_fn left_print, 
-    const char *right_expr, _nt_value right_val, _nt_print_fn right_print)
+struct scope_msg {
+    const _nt_uniq_t ident;
+    struct scope_msg *next_order, *prev_order;
+    struct scope_msg *next_hash;
+    const char text[];
+};
+
+struct _nt_scope_msg {
+    const size_t hash_size;
+    struct scope_msg *first_order;
+    struct scope_msg *last_order;
+    struct scope_msg* hash[];
+};
+
+static unsigned ident_hash(_nt_uniq_t ident)
 {
-    struct _nt_test *test = tls_context->test;
-    if (!test->fail) {
-        tls_context->test->fail = 1;
-        _NT_PRINTF("Test %s FAILED:\n", test->name);
+    unsigned long long in = (unsigned long long)ident;
+    unsigned hash = 2166136261;
+    for (unsigned n = 0; n < sizeof(ident); n++, in >>= CHAR_BIT)
+        hash = (hash ^ (char)in) * 16777619;
+
+    return hash;
+}
+
+static struct _nt_scope_msg* scope_msg_create(size_t hash_size)
+{
+    struct _nt_scope_msg* ptr = malloc(offsetof(struct _nt_scope_msg, hash[hash_size]));
+    if (!ptr) abort();
+
+    memcpy(ptr, &(struct _nt_scope_msg){hash_size, NULL, NULL}, sizeof(struct _nt_scope_msg));
+    memset(ptr->hash, 0, hash_size * sizeof(ptr->hash[0]));
+    return ptr;
+}
+
+static void scope_msg_add(struct _nt_scope_msg *thiz, _nt_uniq_t ident, const char *str)
+{
+    unsigned idx = ident_hash(ident) % thiz->hash_size;
+
+    /* find already existing message with same identifier or insert new at end of hash bucket */
+    struct scope_msg **pmsg = &thiz->hash[idx];
+    while (*pmsg) {
+        if ((*pmsg)->ident == ident)
+            break;
+
+        pmsg = &(*pmsg)->next_hash;
     }
 
-    _NT_PRINTF("%4s%s: %u: assertion failed: %s", "", file, line, name);
+    size_t len = strlen(str) + 1;
+    struct scope_msg* msg = malloc(offsetof(struct scope_msg, text[len]));
+    if (!msg) abort();
+
+    memcpy(msg, &(struct scope_msg){ident, NULL, NULL, NULL}, sizeof(struct scope_msg));
+    memcpy((void*)(intptr_t)msg->text, str, len);
+
+    if (*pmsg)
+    {
+        msg->next_hash = (*pmsg)->next_hash;
+
+        if ((*pmsg)->prev_order)
+            (*pmsg)->prev_order->next_order = (*pmsg)->next_order;
+
+        if ((*pmsg)->next_order)
+            (*pmsg)->next_order->prev_order = (*pmsg)->prev_order;
+
+        if (thiz->last_order == *pmsg)
+            thiz->last_order = (*pmsg)->prev_order;
+
+        if (thiz->first_order == *pmsg)
+            thiz->first_order = (*pmsg)->next_order;
+
+        free(*pmsg);
+    }
+
+    *pmsg = msg;
+
+    msg->prev_order = thiz->last_order;
+
+    if (thiz->last_order)
+        thiz->last_order->next_order = msg;
+
+    thiz->last_order = msg;
+
+    if (!thiz->first_order)
+        thiz->first_order = msg;
+}
+
+struct msg_cons {
+    int (*func)(struct msg_cons *, const char *);
+};
+
+static void scope_msg_get(struct _nt_scope_msg *thiz, struct msg_cons *cons)
+{
+    struct scope_msg *msg = thiz->first_order;
+    if (msg) {
+        while (msg) {
+            if (cons->func(cons, msg->text) < 0)
+                break;
+            msg = msg->next_order;
+        }
+    }
+}
+
+static void scope_msg_reset(struct _nt_scope_msg *thiz)
+{
+    for (unsigned n = 0; n < thiz->hash_size; n++)
+    {
+        struct scope_msg *msg = thiz->hash[n];
+        while (msg) {
+            void *mem = msg;
+            msg = msg->next_hash;
+            free(mem);
+        }
+        thiz->hash[n] = NULL;
+    }
+
+    thiz->first_order = thiz->last_order = NULL;
+}
+
+static void scope_msg_destroy(struct _nt_scope_msg *thiz)
+{
+    scope_msg_reset(thiz);
+    free(thiz);
+}
+
+
+
+
+#define _NT_GET_FUNC(val_type, res_type) _NT_CONCAT(_NT_CONCAT(_NT_CONCAT(_nt_get_, val_type), _as_), res_type)
+#define _NT_GETTER(name) _NT_CONCAT(_nt_get_as_, name)
+#define _NT_DECL_CONV(name, type, ...) _NT_TYPENAME(name) (*_NT_GETTER(name))(const _nt_value_t *);
+
+typedef void _nt_print_fn(_nt_print_t, const _nt_value_t *);
+
+struct _nt_typeinfo {
+    _nt_print_fn* print;
+    _NT_TYPES(_NT_DECL_CONV, dummy)
+};
+
+
+/* Define getters. */
+
+#define NT_TYPES(APPLY, ...) \
+    APPLY(Char,         __VA_ARGS__) \
+    APPLY(signed_char,  __VA_ARGS__) \
+    APPLY(unsigned_char, __VA_ARGS__) \
+    APPLY(any_signed,   __VA_ARGS__) \
+    APPLY(any_unsigned, __VA_ARGS__) \
+    APPLY(any_float,    __VA_ARGS__) \
+    APPLY(any_pointer,  __VA_ARGS__) \
+    APPLY(cstring,      __VA_ARGS__)
+
+// TODO #define CHECK_TYPES(type, ...)
+
+#define NT_DEF_CONV1(type, ...) _NT_TYPES(NT_DEF_CONV2, type, __VA_ARGS__)
+
+#define NT_DEF_CONV2(res_type, unused, val_type, ...) \
+    static _NT_TYPENAME(res_type) _NT_GET_FUNC(val_type, res_type)(const _nt_value_t *val) {\
+        return (_NT_TYPENAME(res_type))_Generic((_NT_TYPENAME(res_type))0,                  \
+            _NT_TYPENAME(any_pointer): NT_CONV_PTR(res_type, val_type, val),                \
+            _NT_TYPENAME(cstring): NT_CONV_PTR(res_type, val_type, val),                    \
+            default: NT_CONV_INT(res_type, val_type, val));                                 \
+    }
+
+#define NT_CONV_PTR(res_type, val_type, val)        \
+    _Generic((_NT_TYPENAME(val_type))0,             \
+        _NT_TYPENAME(any_pointer): val->val_type,   \
+        _NT_TYPENAME(cstring): val->val_type,       \
+        default: 0)
+
+#define NT_CONV_INT(res_type, val_type, val)        \
+    _Generic((_NT_TYPENAME(val_type))0,             \
+        _NT_TYPENAME(any_pointer): 0,               \
+        _NT_TYPENAME(cstring): 0,                   \
+        default: val->val_type)
+
+NT_TYPES(NT_DEF_CONV1, dummy)
+
+/* Definition of all typeinfo structures (TODO apply MAP macro). */
+#define NT_DEF_CONV3(res_type, unused, val_type, ...) \
+    ._NT_GETTER(res_type) = _NT_GET_FUNC(val_type, res_type),
+
+#define NT_DEF_TYPEINFO(val_type, ...)                      \
+    const struct _nt_typeinfo _NT_TYPEINFO(val_type) = {    \
+        .print = _NT_CONCAT(_nt_print_, val_type),          \
+        _NT_TYPES(NT_DEF_CONV3, val_type)                   \
+    };
+
+NT_TYPES(NT_DEF_TYPEINFO, dummy)
+
+/* Function which is called when particular assertion is failed. */
+static void assertion(
+    const char *name, const char *file, unsigned line, int flags, const char *op, int narg,
+    const char *left_expr, const _nt_value_t* left_val, _nt_print_fn left_print, 
+    const char *right_expr, const _nt_value_t* right_val, _nt_print_fn right_print)
+{
+    _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(20 * LINE_MAX);
+
+    _NT_PRINTF(msg, "%s:%u: assertion failed: %s", file, line, name);
     if (!narg)
-        _NT_PRINTF("(%s %s %s)\n", left_expr, op, right_expr);
+        _NT_PRINTF(msg, "(%s %s %s)", left_expr, op, right_expr);
     else
-        _NT_PRINTF("(%s)\n", left_expr);
+        _NT_PRINTF(msg, "(%s)", left_expr);
+
+    assert(current_test != NULL);
+
+    unsigned offs = 0;
+
+    if (!(flags & _NT_NOASSERT) && !current_test->first.fail_line)
+        fprintf(out, "Test %s FAILED:\n", current_test->name), fflush(out);
 
     unsigned nl = 0;
     if (!is_literal(left_expr)) {
-        _NT_PRINTF("%8swhere (%s) = ", "", left_expr);
-        left_print(left_val);
-        ++nl;
+	_NT_PRINTF(msg, "\n%*swhere (%s) = ", offs + 4, "", left_expr);
+	left_print(msg, left_val);
+	++nl;
     }
 
     if (!narg && !is_literal(right_expr)) {
-        _NT_PRINTF("%s%8s%s (%s) = ",
-            nl ? ",\n" : "",
-            "",
-            nl ? "  and" : "where",
-            right_expr);
-        right_print(right_val);
-        ++nl;
+	_NT_PRINTF(msg, "%s%*s%s (%s) = ",
+	    nl ? ",\n" : "",
+	    offs + 4, "",
+	    nl ? "  and" : "where",
+	    right_expr);
+	right_print(msg, right_val);
+	++nl;
     }       
 
-    if (nl) _NT_PRINTF(".\n\n");
+    if (nl) _NT_PRINTF(msg, ".\n");
 
+    fprintf(out, "%*s%s\n", offs, "", msg->buf.str);
     fflush(out);
+
+    current_test->last.fail_file = file;
+    current_test->last.fail_line = line;
+    free(current_test->last.fail_msg);
+    current_test->last.fail_msg = strdup(msg->buf.str);
+
+    if (!current_test->first.fail_line && !(flags & _NT_NOASSERT)) {
+        current_test->first.fail_file = file;
+        current_test->first.fail_line = line;
+        free(current_test->first.fail_msg);
+        current_test->first.fail_msg = strdup(msg->buf.str);
+    }
 }
+
+struct msg_collect {
+    struct msg_cons cons;
+    char *text;
+};
+
+int msg_collect(struct msg_cons *cons, const char *msg)
+{
+    struct msg_collect *col = container_of(cons, struct msg_collect, cons);
+    
+    size_t prev_len = col->text ? strlen(col->text) : 0;
+    size_t next_len = strlen(msg);
+    size_t len = prev_len + next_len + 2;
+    char *text = realloc(col->text, len);
+    if (!text) return -1;
+
+    snprintf(&text[prev_len], len, "\n%s", msg);
+    col->text = text;
+    return next_len;
+}
+
+void _nt_abort(void)
+{
+    assert(current_test != NULL);
+
+    struct msg_collect col = {.cons.func = msg_collect, .text = strdup(current_test->first.fail_msg)};
+    scope_msg_get(current_test->scope_msg, &col.cons);
+
+    fprintf(out, "%s: %u: failure with a message: %s\n",
+        current_test->first.fail_file, current_test->first.fail_line, col.text);
+    fflush(out);
+
+    free(col.text);
+
+    longjmp(*(jmp_buf*)current_test->jmpbuf, 1);
+}
+
+void _nt_assert(void)
+{
+    assert(current_test != NULL);
+
+    struct msg_collect col = {.cons.func = msg_collect, .text = strdup(current_test->last.fail_msg)};
+    scope_msg_get(current_test->scope_msg, &col.cons);
+
+    scope_msg_reset(current_test->scope_msg);
+
+    fprintf(out, "%s: %u: failure with a message: %s\n",
+        current_test->first.fail_file, current_test->first.fail_line, col.text);
+    fflush(out);
+
+    free(col.text);
+}
+
 
 /* Define implementation of named (LT, GT, etc...) binary operations */
 #define IMPL_FUNC(op) _NT_CONCAT(IMPL, op)
@@ -240,21 +569,23 @@ static void assertion(
 #define IMPL_OP_EQ_(a, b) (a == b)
 #define IMPL_OP_NE_(a, b) (a != b)
 
-#define IMPL_OP_STREQ_(a, b)                (!strcmp(a, b))
-#define IMPL_OP_STRNE_(a, b)                (!strcmp(a, b))
-#define IMPL_OP_CONTAINS_(haystack, needle) (!strstr(haystack, needle))
-#define IMPL_OP_MATCHES_(string, pattern)   match(string, pattern)
+#define IMPL_OP_STREQ_(a, b)                    !strcmp(a, b)
+#define IMPL_OP_STRNE_(a, b)                    strcmp(a, b)
+#define IMPL_OP_CONTAINS_(haystack, needle)     strstr(haystack, needle)
+#define IMPL_OP_NOT_CONTAINS_(haystack, needle) !strstr(haystack, needle)
+#define IMPL_OP_MATCHES_(string, pattern)       match(string, pattern)
+#define IMPL_OP_NOT_MATCHES_(string, pattern)   !match(string, pattern)
 
 /* Function template for _nt_OP_TYPE functions declared by _NT_DECL_FUNC macros. */
-#define COMP_TEMPLATE(op_name, type)                                \
-    _NT_DECL_FUNC(op_name, type) {                                  \
-        (void)dummy;                                                \
-        _nt_value left;  left.type = &left_val;                     \
-        _nt_value right; right.type = &right_val;                   \
-        return !!IMPL_FUNC(op_name)(left_val, right_val) ^ neg ? 1  \
-         : (assertion(name, file, line, op, narg,                   \
-                left_expr, left, left_print,                        \
-                right_expr, right, right_print), 0);                \
+#define COMP_TEMPLATE(op_name, type)                                            \
+    _NT_DECL_FUNC(op_name, type) {                                              \
+        (void)dummy;                                                            \
+        return !!IMPL_FUNC(op_name)(                                            \
+            left_type->_NT_GETTER(type)(left_val),                              \
+            right_type->_NT_GETTER(type)(right_val)) ^ (flags & _NT_NEG_OP) ? 1 \
+         : (assertion(name, file, line, flags, op, narg,                        \
+                left_expr, left_val, left_type->print,                          \
+                right_expr, right_val, right_type->print), 0);                  \
     }
 
 /* Instantiate template listed above for all types and all binary operations
@@ -267,7 +598,30 @@ _NT_TYPES(INST_TMPL_ALL, dummy)
 COMP_TEMPLATE(_OP_STREQ_, cstring)
 COMP_TEMPLATE(_OP_STRNE_, cstring)
 COMP_TEMPLATE(_OP_CONTAINS_, cstring)
+COMP_TEMPLATE(_OP_NOT_CONTAINS_, cstring)
 COMP_TEMPLATE(_OP_MATCHES_, cstring)
+COMP_TEMPLATE(_OP_NOT_MATCHES_, cstring)
+
+void _nt_register_mock(struct _nt_mock *mock)
+{
+    mock->next = mocks_list;
+    mocks_list = mock;
+}
+
+static void reset_all_mocks(void)
+{
+    struct _nt_mock *mock = mocks_list;
+    while (mock) {
+        mock->func();
+        mock = mock->next;
+    }
+}
+
+void _nt_trap(void)
+{
+    volatile int x = 0;
+    (void)x;
+}
 
 static struct _nt_suite* find_suite(const char *name)
 {
@@ -297,6 +651,9 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite)
         if (!other->teardown)
             other->teardown = suite->teardown;
 
+        if (!other->fixture_size)
+            other->fixture_size = suite->fixture_size;
+
         suite = other;
     }
 
@@ -323,45 +680,10 @@ void _nt_register_test(struct _nt_test *test)
     *next = test;
 }
 
-void _nt_register_mock(struct _nt_mock *mock)
-{
-    mock->next = mocks_list;
-    mocks_list = mock;
-}
-
-static void reset_all_mocks(void)
-{
-    struct _nt_mock *mock = mocks_list;
-    while (mock) {
-        mock->func();
-        mock = mock->next;
-    }
-}
-
-
-void _nt_trap(void)
-{
-    volatile int x = 0;
-    (void)x;
-}
-
-void _nt_fail(const char *msg, const char *file, unsigned line)
-{
-    if (msg) {
-        _NT_PRINTF("Test %s FAILED:\n", tls_context->test->name);
-        _NT_PRINTF("%s: %u: failure with a message: %s", file, line, msg);
-        fflush(out);
-    }
-    longjmp(tls_context->exception, 1);
-}
-
-
 static int run_test(struct _nt_test *test)
 {
-    _NT_PRINTF("running %s\n", test->name);
+    fprintf(out, "running %s\n", test->name);
     fflush(out);
-
-    reset_all_mocks();
 
     #ifndef __cplusplus
     _Alignas(max_align_t) char fixture [test->suite->fixture_size];
@@ -370,31 +692,213 @@ static int run_test(struct _nt_test *test)
     #endif
 
     memset(fixture, 0, test->suite->fixture_size);
+    test->fixture = (_nt_fixture_tag*)fixture;
+    test->scope_msg = scope_msg_create(1024);
+    test->first.fail_line = 0, test->first.fail_file = test->first.fail_msg = NULL;
+    test->last.fail_line = 0, test->last.fail_file = test->last.fail_msg = NULL;
+
+    current_test = test;
+    reset_all_mocks();
 
     if (test->suite->setup)
         test->suite->setup((_nt_fixture_tag*)fixture);
 
     struct context ctx;
     ctx.test = test;
-
+    test->jmpbuf = &ctx.exception;
     if (!setjmp(ctx.exception))
     {
-        tls_context = &ctx;
-
-        test->fail = 0;
+        // tls_context = &ctx;
         test->func((_nt_fixture_tag*) fixture);
     }
-    else {
-        test->fail = 1;
-    }
 
-    tls_context = NULL;
+    int result = !!current_test->first.fail_line;
+
+    // tls_context = NULL;
 
     if (test->suite->teardown)
         test->suite->teardown((_nt_fixture_tag*)fixture);
 
-    return test->fail;
+    free(test->first.fail_msg), free(test->last.fail_msg);
+    test->first.fail_msg = test->last.fail_msg = NULL;
+
+    scope_msg_destroy(test->scope_msg);
+    test->scope_msg = NULL;
+
+    current_test = NULL;
+
+    return result;
 }
+
+int _nt_is_fail(void)
+{
+    int result = !!current_test->first.fail_line;
+    if (!result) _nt_scope_reset();
+    return result;
+}
+
+static void _nt_message(_nt_print_t msg, unsigned nargs, va_list args)
+{
+    for (unsigned n = 0; n < nargs; n++)
+    {
+        const _nt_value_t *val = va_arg(args, _nt_value_t*);
+        _nt_typeinfo_t type = va_arg(args, _nt_typeinfo_t);
+
+        if (type->print == _nt_print_cstring)
+            _NT_PRINTF(msg, "%s", val->cstring);
+        else
+            type->print(msg, val);
+    }
+}
+
+void _nt_fail(const char *file, unsigned line, unsigned nargs, ...)
+{
+    va_list args;
+    va_start(args, nargs);
+    _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(10 * LINE_MAX);
+    _NT_PRINTF(msg, "%s:%u: ", file, line);
+    _nt_message(msg, nargs, args);
+
+    struct msg_collect col = {.cons.func = msg_collect, .text = strdup(msg->buf.str)};
+    scope_msg_get(current_test->scope_msg, &col.cons);
+
+    if (!current_test->first.fail_line) {
+        fprintf(out, "Test %s FAILED:\n", current_test->name);
+        current_test->first.fail_file = file;
+        current_test->first.fail_line = line;
+        free(current_test->first.fail_msg);
+        current_test->first.fail_msg = strdup(col.text);
+    }
+
+    fprintf(out, "%s: %u: failure with a message: %s\n", file, line, col.text);
+    fflush(out);
+
+    free(col.text);
+
+    longjmp(*(jmp_buf*)current_test->jmpbuf, 1);
+}
+
+void _nt_fail_check(const char *file, unsigned line, unsigned nargs, ...)
+{
+    va_list args;
+    va_start(args, nargs);
+
+    _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(10 * LINE_MAX);
+    _NT_PRINTF(msg, "%s:%u: ", file, line);
+    _nt_message(msg, nargs, args);
+
+    struct msg_collect col = {.cons.func = msg_collect, .text = strdup(msg->buf.str)};
+    scope_msg_get(current_test->scope_msg, &col.cons);
+
+    scope_msg_reset(current_test->scope_msg);
+
+    if (!current_test->first.fail_line) {
+        fprintf(out, "Test %s FAILED:\n", current_test->name);
+        current_test->first.fail_file = file;
+        current_test->first.fail_line = line;
+        free(current_test->first.fail_msg);
+        current_test->first.fail_msg = strdup(col.text);
+    }
+
+    fprintf(out, "%s: %u: failure with a message: %s\n", file, line, col.text);
+    fflush(out);
+
+    free(col.text);
+    va_end(args);
+}
+
+void _nt_skip(const char *file, unsigned line, unsigned nargs, ...)
+{
+    va_list args;
+    va_start(args, nargs);
+    _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(10 * LINE_MAX);
+    _NT_PRINTF(msg, "%s:%u: ", file, line);
+    _nt_message(msg, nargs, args);
+    fprintf(out, "Test %s is skipped at %s:%u: %s\n", current_test->name, file, line, msg->buf.str);
+    fflush(out);
+    longjmp(*(jmp_buf*)current_test->jmpbuf, 1);
+}
+
+void _nt_success(const char *file, unsigned line, unsigned nargs, ...)
+{
+    va_list args;
+    va_start(args, nargs);
+    if (nargs) {
+        _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(10 * LINE_MAX);
+        _NT_PRINTF(msg, "%s:%u: ", file, line);
+        _nt_message(msg, nargs, args);
+        fprintf(out, "%s\n", msg->buf.str);
+        fflush(out);
+    }
+    assert(current_test);
+    longjmp(*(jmp_buf*)current_test->jmpbuf, 1);
+}
+
+void _nt_warn(const char *file, unsigned line, unsigned nargs, ...)
+{
+    va_list args;
+    va_start(args, nargs);
+    _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(10 * LINE_MAX);
+    _NT_PRINTF(msg, "%s:%u: ", file, line);
+    _nt_message(msg, nargs, args);
+    fprintf(out, "WARN: %s\n", msg->buf.str);
+    fflush(out);
+    va_end(args);
+}
+
+void _nt_info(_nt_uniq_t ident, const char *file, unsigned line, unsigned nargs, ...)
+{
+    va_list args;
+    va_start(args, nargs);
+
+    _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(10 * LINE_MAX);
+    _NT_PRINTF(msg, "%s:%u: ", file, line);
+    _nt_message(msg, nargs, args);
+
+    assert(current_test);
+    scope_msg_add(current_test->scope_msg, ident, msg->buf.str);
+    
+    va_end(args);
+}
+
+void _nt_capture(_nt_uniq_t ident, const char *file, unsigned line, unsigned nargs, ...)
+{
+    if (!nargs)
+        return;
+
+    _nt_print_t msg = (_nt_print_t)MAKE_STRING_BUF(10 * LINE_MAX);
+    _NT_PRINTF(msg, "%s:%u: ", file, line);
+
+    va_list args;
+    va_start(args, nargs);
+
+    const char *dlm = "";
+    for (unsigned n = 0; n < nargs; n++)
+    {
+        const char *name = va_arg(args, const char*);
+        const _nt_value_t *val = va_arg(args, _nt_value_t*);
+        _nt_typeinfo_t type = va_arg(args, _nt_typeinfo_t);
+
+        if (!is_literal(name))
+            _NT_PRINTF(msg, "%s%s = ", dlm, name);
+        else
+            _NT_PRINTF(msg, "%s", dlm);
+
+        type->print(msg, val);
+        dlm = ", ";
+    }
+
+    va_end(args);
+
+    assert(current_test);
+    scope_msg_add(current_test->scope_msg, ident, msg->buf.str);
+}
+
+void _nt_scope_reset(void)
+{
+    scope_msg_reset(current_test->scope_msg);
+}
+
 
 
 static int run_all_tests(int nfilt, const char *const* filters)
@@ -414,15 +918,15 @@ static int run_all_tests(int nfilt, const char *const* filters)
         if (!nfilt || filt != &filters[nfilt])
         {
             ++ntests;
-            test->fail = run_test(test);
-            if (test->fail)
+            if (run_test(test))
                 ++nfails;
         }
 
         test = test->next;
     }
 
-    _NT_PRINTF("%u/%u tests passed, %u tests failed.\n", ntests-nfails, ntests, nfails);
+    fprintf(out, "%u/%u tests passed, %u tests failed.\n", ntests - nfails, ntests, nfails);
+    fflush(out);
     return ntests != nfails;
 }
 
@@ -459,7 +963,6 @@ static int cmd_verbose(int argc, const char *const* argv)
 
     return 0;
 }
-
 
 
 static int cmd_help(int argc, const char *const* argv);
