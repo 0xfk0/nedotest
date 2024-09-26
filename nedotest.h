@@ -335,7 +335,8 @@
     APPLY(  const signed char*, cstring,        const_signed_char_ptr,   __VA_ARGS__) \
     APPLY(        signed char*, cstring,        signed_char_ptr,         __VA_ARGS__) \
     APPLY(const unsigned char*, cstring,        const_unsigned_char_ptr, __VA_ARGS__) \
-    APPLY(      unsigned char*, cstring,        unsigned_char_ptr,       __VA_ARGS__)
+    APPLY(      unsigned char*, cstring,        unsigned_char_ptr,       __VA_ARGS__) \
+    APPLY(               _Bool, any_unsigned,   _Bool,                   __VA_ARGS__)
 
 /* This macros puts given argument to double quotes: str -> "str". */
 #define _NT_STRINGIFY(str)  _NT_STRINGIFY_(str)
