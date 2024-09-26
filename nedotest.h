@@ -757,9 +757,9 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
 #define _NT_JOIN_19(F, X, Y) _NT_JOIN_1(F, X, Y), _NT_JOIN_18(F, (_NT_CDR X), (_NT_CDR Y))
 #define _NT_JOIN_20(F, X, Y) _NT_JOIN_1(F, X, Y), _NT_JOIN_19(F, (_NT_CDR X), (_NT_CDR Y))
 
-#define _NT_MOCK_DECL_ARG(x, y) x _NT_MOCK_ARG_NAME(x, y)
+#define _NT_MOCK_DECL_ARG(x, y) x _NT_NVOID(x, _NT_MOCK_ARG_NAME(x, y))
 
-#define _NT_MOCK_ARG_NAME(x, y) _NT_CONCAT(_, y)
+#define _NT_MOCK_ARG_NAME(x, y) _NT_NVOID(x, _NT_CONCAT(_, y))
 
 #define _NT_MOCK_DECL_ARGS(APPLY, ...) \
     _NT_JOIN(APPLY, _NT_NARGS(__VA_ARGS__), (__VA_ARGS__, dummy), (_NT_NUMBERS, dummy))
@@ -777,7 +777,7 @@ const struct _nt_suite* _nt_setup_suite(struct _nt_suite *suite);
 #define _NT_VOID(...)
 
 #define _NT_EMPTY(True, False, arg) \
-    _NT_APPLY(_NT_CDR, _NT_APPLY(_NT_CDR, _NT_EMPTY_EVAL arg (True), )) \
+    _NT_APPLY(_NT_CAR, _NT_APPLY(_NT_CDR, _NT_EMPTY_EVAL arg (True), )) \
     _NT_APPLY(_NT_CAR, _NT_APPLY(_NT_CDR, _NT_COMMA_FUNC arg (), False))
 
 #define _NT_EMPTY_EVAL(expr) , expr
