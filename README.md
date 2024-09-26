@@ -1,7 +1,7 @@
 
 # Nedotest
 
-**Nedotest** is a minimalistic (~1000 SLOC) Unit Testing framework for C and C++.
+**Nedotest** is a minimalistic (~2000 SLOC) Unit Testing framework for C and C++.
 
 
 ## Features
