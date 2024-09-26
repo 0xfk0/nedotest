@@ -290,8 +290,10 @@
 
 #ifdef __cplusplus
 #define _NT_NULL 0
+#define _NT_BOOL bool
 #else
 #define _NT_NULL ((void*)0)
+#define _NT_BOOL _Bool
 #endif
 
 /* Note, following macroses will declare _nt_OP_char functions
@@ -336,7 +338,7 @@
     APPLY(        signed char*, cstring,        signed_char_ptr,         __VA_ARGS__) \
     APPLY(const unsigned char*, cstring,        const_unsigned_char_ptr, __VA_ARGS__) \
     APPLY(      unsigned char*, cstring,        unsigned_char_ptr,       __VA_ARGS__) \
-    APPLY(               _Bool, any_unsigned,   _Bool,                   __VA_ARGS__)
+    APPLY(            _NT_BOOL, any_unsigned,   _NT_BOOL,                __VA_ARGS__)
 
 /* This macros puts given argument to double quotes: str -> "str". */
 #define _NT_STRINGIFY(str)  _NT_STRINGIFY_(str)
